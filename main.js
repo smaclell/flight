@@ -90,6 +90,49 @@ class FlightSimulator {
 
         this.createInitialClouds();
 
+        // Add weather parameters
+        this.weatherState = {
+            isRaining: false,
+            rainIntensity: 0.5,
+            rainDrops: [],
+            maxRainDrops: 1000
+        };
+
+        // Create rain geometry and material
+        this.rainGeometry = new THREE.BufferGeometry();
+        this.rainMaterial = new THREE.PointsMaterial({
+            color: 0xaaaaaa,
+            size: 0.1,
+            transparent: true,
+            opacity: 0.6
+        });
+
+        // Initialize rain system
+        this.rainSystem = new THREE.Points(this.rainGeometry, this.rainMaterial);
+        this.scene.add(this.rainSystem);
+
+        // Add lightning parameters
+        this.lightning = {
+            active: false,
+            flashIntensity: 0,
+            lastStrike: 0,
+            minInterval: 5000,
+            maxInterval: 15000
+        };
+
+        // Add lightning ambient light
+        this.lightningLight = new THREE.AmbientLight(0xffffff, 0);
+        this.scene.add(this.lightningLight);
+
+        // Add dynamic fog parameters
+        this.fogParams = {
+            baseDensity: 0.001,
+            maxDensity: 0.005,
+            currentDensity: 0.001,
+            transitionSpeed: 0.0001,
+            heightFalloff: 0.0015  // How quickly fog thins with altitude
+        };
+
         this.setupEventListeners();
         this.createInitialTerrain();
         this.animate();
@@ -439,6 +482,9 @@ class FlightSimulator {
 
         this.updateFlight();
         this.updateTerrain();
+        this.updateRain();
+        this.updateLightning();
+        this.updateFog();
         this.renderer.render(this.scene, this.camera);
     }
 
@@ -528,6 +574,111 @@ class FlightSimulator {
             speed: 0.1 + Math.random() * 0.2,
             direction: new THREE.Vector2(Math.random() - 0.5, Math.random() - 0.5).normalize()
         });
+    }
+
+    updateRain() {
+        if (!this.weatherState.isRaining) return;
+
+        // Update existing raindrops
+        this.weatherState.rainDrops = this.weatherState.rainDrops.filter(drop => {
+            drop.y -= 2;
+            if (drop.y < this.getElevation(drop.x, drop.z)) {
+                return false;
+            }
+            return true;
+        });
+
+        // Add new raindrops
+        while (this.weatherState.rainDrops.length < this.weatherState.maxRainDrops) {
+            this.weatherState.rainDrops.push({
+                x: this.camera.position.x + (Math.random() - 0.5) * 200,
+                y: this.camera.position.y + 100,
+                z: this.camera.position.z + (Math.random() - 0.5) * 200
+            });
+        }
+
+        // Update geometry
+        const positions = new Float32Array(this.weatherState.rainDrops.length * 3);
+        this.weatherState.rainDrops.forEach((drop, i) => {
+            positions[i * 3] = drop.x;
+            positions[i * 3 + 1] = drop.y;
+            positions[i * 3 + 2] = drop.z;
+        });
+
+        this.rainGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    }
+
+    updateLightning() {
+        const now = Date.now();
+
+        // Check if it's time for a new lightning strike
+        if (this.lightning.active &&
+            now - this.lightning.lastStrike > this.lightning.minInterval &&
+            Math.random() < 0.001) {
+
+            this.lightning.flashIntensity = 1.0;
+            this.lightning.lastStrike = now;
+
+            // Create lightning bolt geometry
+            const startPoint = new THREE.Vector3(
+                this.camera.position.x + (Math.random() - 0.5) * 1000,
+                800,
+                this.camera.position.z + (Math.random() - 0.5) * 1000
+            );
+
+            // Create forked lightning effect
+            this.createLightningBolt(startPoint);
+        }
+
+        // Update flash intensity
+        if (this.lightning.flashIntensity > 0) {
+            this.lightning.flashIntensity *= 0.7;
+            this.lightningLight.intensity = this.lightning.flashIntensity;
+        }
+    }
+
+    createLightningBolt(startPoint) {
+        const material = new THREE.LineBasicMaterial({
+            color: 0xffffff,
+            opacity: 0.8,
+            transparent: true
+        });
+
+        const points = [startPoint];
+        let currentPoint = startPoint.clone();
+
+        // Create zigzag pattern down to ground
+        while (currentPoint.y > this.getElevation(currentPoint.x, currentPoint.z)) {
+            currentPoint = currentPoint.clone().add(
+                new THREE.Vector3(
+                    (Math.random() - 0.5) * 20,
+                    -30,
+                    (Math.random() - 0.5) * 20
+                )
+            );
+            points.push(currentPoint);
+        }
+
+        const geometry = new THREE.BufferGeometry().setFromPoints(points);
+        const lightning = new THREE.Line(geometry, material);
+        this.scene.add(lightning);
+
+        // Remove after flash
+        setTimeout(() => this.scene.remove(lightning), 100);
+    }
+
+    updateFog() {
+        // Update fog density based on altitude
+        const heightFactor = Math.exp(-this.camera.position.y * this.fogParams.heightFalloff);
+        const targetDensity = this.fogParams.baseDensity +
+            (this.fogParams.maxDensity - this.fogParams.baseDensity) * heightFactor;
+
+        // Smoothly transition fog density
+        this.fogParams.currentDensity += (targetDensity - this.fogParams.currentDensity) *
+            this.fogParams.transitionSpeed;
+
+        // Update scene fog
+        this.scene.fog.density = this.fogParams.currentDensity;
     }
 }
 
