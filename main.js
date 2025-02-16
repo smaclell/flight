@@ -45,6 +45,10 @@ class FlightSimulator {
 
         this.minClearance = 20; // Minimum distance to maintain above terrain
 
+        // Add tree parameters
+        this.treeDensity = 0.003; // Trees per square unit
+        this.treeInstancedMesh = this.createTreeInstancedMesh();
+
         this.setupEventListeners();
         this.createInitialTerrain();
         this.animate();
@@ -72,6 +76,34 @@ class FlightSimulator {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    createTreeInstancedMesh() {
+        // Create a simple cone + cylinder for the tree
+        const treeGeometry = new THREE.Group();
+
+        // Tree trunk
+        const trunkGeometry = new THREE.CylinderGeometry(0.5, 0.8, 4, 6);
+        const trunkMaterial = new THREE.MeshPhongMaterial({ color: 0x4d2926 });
+        const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+        trunk.position.y = 2;
+
+        // Tree top
+        const topGeometry = new THREE.ConeGeometry(2, 6, 8);
+        const topMaterial = new THREE.MeshPhongMaterial({ color: 0x1d4d1d });
+        const top = new THREE.Mesh(topGeometry, topMaterial);
+        top.position.y = 7;
+
+        // Combine geometries
+        const combinedGeometry = new THREE.BufferGeometry();
+        const matrices = [];
+
+        trunk.updateMatrix();
+        matrices.push(trunk.matrix);
+        top.updateMatrix();
+        matrices.push(top.matrix);
+
+        return { trunk: trunkGeometry, top: topGeometry, materials: [trunkMaterial, topMaterial] };
     }
 
     createTerrainChunk(x, z) {
@@ -104,6 +136,56 @@ class FlightSimulator {
         const chunk = new THREE.Mesh(geometry, material);
         chunk.position.set(x * this.chunkSize, 0, z * this.chunkSize);
         this.scene.add(chunk);
+
+        // Add trees to the chunk
+        const chunkArea = this.chunkSize * this.chunkSize;
+        const numberOfTrees = Math.floor(chunkArea * this.treeDensity);
+
+        for (let i = 0; i < numberOfTrees; i++) {
+            // Random position within chunk
+            const treeX = (Math.random() - 0.5) * this.chunkSize + x * this.chunkSize;
+            const treeZ = (Math.random() - 0.5) * this.chunkSize + z * this.chunkSize;
+
+            // Get elevation at tree position
+            const treeY = this.getElevation(treeX, treeZ);
+
+            // Only place trees on relatively flat surfaces
+            const slopeCheck1 = this.getElevation(treeX + 1, treeZ);
+            const slopeCheck2 = this.getElevation(treeX, treeZ + 1);
+
+            if (Math.abs(slopeCheck1 - treeY) < 2 && Math.abs(slopeCheck2 - treeY) < 2) {
+                // Create tree
+                const trunk = new THREE.Mesh(
+                    this.treeInstancedMesh.trunk,
+                    this.treeInstancedMesh.materials[0]
+                );
+                const top = new THREE.Mesh(
+                    this.treeInstancedMesh.top,
+                    this.treeInstancedMesh.materials[1]
+                );
+
+                trunk.position.set(treeX, treeY, treeZ);
+                top.position.set(treeX, treeY + 4, treeZ);
+
+                // Add random rotation around Y axis
+                const rotation = Math.random() * Math.PI * 2;
+                trunk.rotation.y = rotation;
+                top.rotation.y = rotation;
+
+                // Add random scale variation
+                const scale = 0.8 + Math.random() * 0.4;
+                trunk.scale.set(scale, scale, scale);
+                top.scale.set(scale, scale, scale);
+
+                this.scene.add(trunk);
+                this.scene.add(top);
+
+                // Store references to remove later
+                if (!chunk.trees) chunk.trees = [];
+                chunk.trees.push(trunk, top);
+            }
+        }
+
         return chunk;
     }
 
@@ -160,6 +242,9 @@ class FlightSimulator {
             if (Math.abs(x - currentChunkX) > this.chunksVisible ||
                 Math.abs(z - currentChunkZ) > this.chunksVisible) {
                 this.scene.remove(chunk);
+                if (chunk.trees) {
+                    chunk.trees.forEach(tree => this.scene.remove(tree));
+                }
                 this.terrainChunks.delete(key);
             }
         }
