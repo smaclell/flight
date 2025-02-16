@@ -15,7 +15,7 @@ class FlightSimulator {
         this.speed = 0;
         this.maxSpeed = 2.4;
         this.acceleration = 0.01;
-        this.deceleration = 0.001;
+        this.deceleration = 0.005;
         this.rotationSpeed = 0.02;
 
         // Controls state
@@ -37,17 +37,29 @@ class FlightSimulator {
         this.chunksVisible = 5;
 
         // Add terrain generation parameters
-        this.noiseScale = 0.004;  // Decreased from 0.02 for wider hills
-        this.heightScale = 250;   // Increased from 40 for taller mountains
+        this.noiseScale = 0.003;  // Slightly decreased for wider features
+        this.heightScale = 300;   // Increased for more elevation variation
+        this.lakeThreshold = 0.1; // Increased threshold = rarer lakes
+        this.lakeSize = 40.0;     // Lakes will be 10x the chunk size
 
         // Initialize noise
         noise.seed(Math.random());
 
-        this.minClearance = 20; // Minimum distance to maintain above terrain
+        this.minClearance = 25; // Minimum distance to maintain above terrain
 
         // Add tree parameters
-        this.treeDensity = 0.003; // Trees per square unit
+        this.treeDensity = 0.0025; // Trees per square unit
         this.treeInstancedMesh = this.createTreeInstancedMesh();
+
+        // Add water parameters
+        this.waterLevel = 40;
+        this.waterMaterial = new THREE.MeshPhongMaterial({
+            color: 0x0077be,      // Bright blue color
+            transparent: false,    // Made solid for better visibility
+            opacity: 0.8,
+            shininess: 100,
+            side: THREE.DoubleSide
+        });
 
         this.setupEventListeners();
         this.createInitialTerrain();
@@ -136,6 +148,54 @@ class FlightSimulator {
         const chunk = new THREE.Mesh(geometry, material);
         chunk.position.set(x * this.chunkSize, 0, z * this.chunkSize);
         this.scene.add(chunk);
+
+        // Check if this chunk should contain a lake
+        const chunkCenterX = x * this.chunkSize;
+        const chunkCenterZ = z * this.chunkSize;
+        const lakeNoise = noise.perlin2(chunkCenterX * 0.001, chunkCenterZ * 0.001);
+
+        if (lakeNoise > this.lakeThreshold) {
+            // Create larger water plane for the lake
+            const waterGeometry = new THREE.PlaneGeometry(
+                this.chunkSize * this.lakeSize,
+                this.chunkSize * this.lakeSize,
+                1, 1
+            );
+            waterGeometry.rotateX(-Math.PI / 2);
+
+            const water = new THREE.Mesh(waterGeometry, this.waterMaterial);
+            water.position.set(
+                x * this.chunkSize,
+                this.waterLevel,
+                z * this.chunkSize
+            );
+
+            // Store water reference with the chunk
+            chunk.water = water;
+            this.scene.add(water);
+
+            // Create deeper and wider basins for larger lakes
+            const vertices = chunk.geometry.attributes.position.array;
+            for (let i = 0; i < vertices.length; i += 3) {
+                const vertexX = vertices[i] + chunkCenterX;
+                const vertexZ = vertices[i + 2] + chunkCenterZ;
+
+                const distanceFromCenter = Math.sqrt(
+                    Math.pow((vertexX - chunkCenterX), 2) +
+                    Math.pow((vertexZ - chunkCenterZ), 2)
+                );
+
+                // Create deeper basins with wider influence
+                if (vertices[i + 1] < this.waterLevel + 10) {
+                    const smoothFactor = 1 - Math.min(distanceFromCenter / (this.chunkSize * this.lakeSize * 0.5), 1);
+                    vertices[i + 1] = Math.min(vertices[i + 1],
+                        this.waterLevel - 15 + (smoothFactor * 10)); // Deeper depression
+                }
+            }
+
+            chunk.geometry.attributes.position.needsUpdate = true;
+            chunk.geometry.computeVertexNormals();
+        }
 
         // Add trees to the chunk
         const chunkArea = this.chunkSize * this.chunkSize;
@@ -245,6 +305,9 @@ class FlightSimulator {
                 if (chunk.trees) {
                     chunk.trees.forEach(tree => this.scene.remove(tree));
                 }
+                if (chunk.water) {
+                    this.scene.remove(chunk.water);
+                }
                 this.terrainChunks.delete(key);
             }
         }
@@ -272,8 +335,8 @@ class FlightSimulator {
         // Handle rotation with limited speed near ground
         if (this.keys.a) this.camera.rotation.y += this.rotationSpeed;
         if (this.keys.d) this.camera.rotation.y -= this.rotationSpeed;
-        if (this.keys.w) this.camera.rotation.x -= (heightAboveTerrain < this.minClearance * 2 ? rotationLimit : this.rotationSpeed);
-        if (this.keys.s) this.camera.rotation.x += (heightAboveTerrain < this.minClearance * 2 ? rotationLimit : this.rotationSpeed);
+        if (this.keys.s) this.camera.rotation.x -= (heightAboveTerrain < this.minClearance * 2 ? rotationLimit : this.rotationSpeed);
+        if (this.keys.w) this.camera.rotation.x += (heightAboveTerrain < this.minClearance * 2 ? rotationLimit : this.rotationSpeed);
 
         // Limit pitch rotation
         this.camera.rotation.x = Math.max(Math.min(this.camera.rotation.x, Math.PI / 2), -Math.PI / 2);
