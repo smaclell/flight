@@ -75,6 +75,21 @@ class FlightSimulator {
         this.chunkRemovalQueue = [];
         this.removalsPerFrame = 2;  // Process fewer removals than additions
 
+        // Add cloud parameters
+        this.clouds = new THREE.Group();
+        this.scene.add(this.clouds);
+        this.cloudParticles = [];
+
+        // Add cloud spawn parameters
+        this.cloudSpawnChance = 0.02;  // 2% chance per frame to spawn new cloud
+        this.maxClouds = 30;
+        this.cloudSpawnDistance = 2000;
+
+        // Add cloud texture
+        this.cloudTexture = this.createCloudTexture();
+
+        this.createInitialClouds();
+
         this.setupEventListeners();
         this.createInitialTerrain();
         this.animate();
@@ -398,9 +413,121 @@ class FlightSimulator {
     animate() {
         requestAnimationFrame(() => this.animate());
 
+        // Randomly spawn new clouds
+        if (Math.random() < this.cloudSpawnChance) {
+            this.spawnCloud();
+        }
+
+        // Update clouds
+        this.cloudParticles.forEach((particle, index) => {
+            particle.mesh.position.x += particle.speed * particle.direction.x;
+            particle.mesh.position.z += particle.speed * particle.direction.y;
+
+            // Slowly rotate the cloud group for more dynamic movement
+            particle.mesh.rotation.y += 0.001;
+
+            const distanceToCamera = new THREE.Vector2(
+                particle.mesh.position.x - this.camera.position.x,
+                particle.mesh.position.z - this.camera.position.z
+            ).length();
+
+            if (distanceToCamera > this.cloudSpawnDistance * 1.5) {
+                this.clouds.remove(particle.mesh);
+                this.cloudParticles.splice(index, 1);
+            }
+        });
+
         this.updateFlight();
         this.updateTerrain();
         this.renderer.render(this.scene, this.camera);
+    }
+
+    createInitialClouds() {
+        // Create initial set of clouds
+        for (let i = 0; i < 20; i++) {
+            this.spawnCloud();
+        }
+    }
+
+    createCloudTexture() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 128;
+        const context = canvas.getContext('2d');
+
+        // Create a radial gradient
+        const gradient = context.createRadialGradient(
+            canvas.width / 2, canvas.height / 2, 0,
+            canvas.width / 2, canvas.height / 2, canvas.width / 2
+        );
+
+        // Soft white in the center, fading to transparent
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 0.8)');
+        gradient.addColorStop(0.4, 'rgba(255, 255, 255, 0.6)');
+        gradient.addColorStop(0.8, 'rgba(255, 255, 255, 0.2)');
+        gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, canvas.width, canvas.height);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.needsUpdate = true;
+        return texture;
+    }
+
+    spawnCloud() {
+        if (this.cloudParticles.length >= this.maxClouds) return;
+
+        const cloudGeometry = new THREE.PlaneGeometry(500, 500);
+        const cloudMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.8,
+            side: THREE.DoubleSide,
+            map: this.cloudTexture,
+            depthWrite: false
+        });
+
+        // Create multiple layers for more volume
+        const cloudGroup = new THREE.Group();
+        const layers = 3;
+
+        for (let i = 0; i < layers; i++) {
+            const cloudLayer = new THREE.Mesh(cloudGeometry, cloudMaterial.clone());
+            cloudLayer.position.y = i * 20; // Stack layers with slight vertical offset
+            cloudLayer.rotation.x = Math.PI / 2;
+
+            // Slightly different rotation for each layer
+            cloudLayer.rotation.z = Math.random() * Math.PI * 2;
+
+            // Slightly different scale for each layer
+            const baseScale = 0.5 + Math.random() * 0.5;
+            cloudLayer.scale.set(
+                baseScale * (1 - i * 0.1),
+                baseScale * (1 - i * 0.1),
+                baseScale * (1 - i * 0.1)
+            );
+
+            cloudGroup.add(cloudLayer);
+        }
+
+        // Position the entire cloud group
+        const angle = Math.random() * Math.PI * 2;
+        const x = this.camera.position.x + Math.cos(angle) * this.cloudSpawnDistance;
+        const z = this.camera.position.z + Math.sin(angle) * this.cloudSpawnDistance;
+
+        cloudGroup.position.set(
+            x,
+            600 + Math.random() * 400,
+            z
+        );
+
+        this.clouds.add(cloudGroup);
+        this.cloudParticles.push({
+            mesh: cloudGroup,
+            speed: 0.1 + Math.random() * 0.2,
+            direction: new THREE.Vector2(Math.random() - 0.5, Math.random() - 0.5).normalize()
+        });
     }
 }
 
