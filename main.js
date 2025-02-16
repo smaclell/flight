@@ -38,8 +38,8 @@ class FlightSimulator {
         this.loadThreshold = 0.7;   // Trigger new chunk loading when 70% through current chunk
 
         // Add terrain generation parameters
-        this.noiseScale = 0.003;  // Slightly decreased for wider features
-        this.heightScale = 300;   // Increased for more elevation variation
+        this.noiseScale = 0.002;    // Decreased for wider features
+        this.heightScale = 500;     // Increased significantly for taller mountains
         this.lakeThreshold = 0.1; // Increased threshold = rarer lakes
         this.lakeSize = 40.0;     // Lakes will be 10x the chunk size
 
@@ -245,9 +245,10 @@ class FlightSimulator {
         // Base terrain layer (large features)
         let elevation = noise.perlin2(x * this.noiseScale, z * this.noiseScale);
 
-        // Add multiple octaves of noise with adjusted scales for gentler slopes
-        elevation += noise.perlin2(x * this.noiseScale * 2, z * this.noiseScale * 2) * 0.3;  // Reduced from 0.5
-        elevation += noise.perlin2(x * this.noiseScale * 4, z * this.noiseScale * 4) * 0.15;  // Reduced from 0.25
+        // Add multiple octaves of noise with adjusted scales for more dramatic terrain
+        elevation += noise.perlin2(x * this.noiseScale * 2, z * this.noiseScale * 2) * 0.5;   // Increased influence
+        elevation += noise.perlin2(x * this.noiseScale * 4, z * this.noiseScale * 4) * 0.25;  // Increased influence
+        elevation += noise.perlin2(x * this.noiseScale * 8, z * this.noiseScale * 8) * 0.125; // Added another layer
 
         // Normalize and scale
         elevation = (elevation + 1) * 0.5 * this.heightScale;
