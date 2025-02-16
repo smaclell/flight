@@ -34,7 +34,7 @@ class FlightSimulator {
         // Terrain management
         this.terrainChunks = new Map();
         this.chunkSize = 200;
-        this.chunksVisible = 5;
+        this.chunksVisible = 7;
 
         // Add terrain generation parameters
         this.noiseScale = 0.003;  // Slightly decreased for wider features
@@ -48,8 +48,13 @@ class FlightSimulator {
         this.minClearance = 25; // Minimum distance to maintain above terrain
 
         // Add tree parameters
-        this.treeDensity = 0.0025; // Trees per square unit
+        this.treeDensity = 0.002;
         this.treeInstancedMesh = this.createTreeInstancedMesh();
+
+        // Add chunk loading queue
+        this.chunkLoadQueue = [];
+        this.chunksPerFrame = 3;      // Reduced from 6
+        this.lookAheadDistance = 4;
 
         // Add water parameters
         this.waterLevel = 40;
@@ -60,6 +65,10 @@ class FlightSimulator {
             shininess: 100,
             side: THREE.DoubleSide
         });
+
+        // Add loading ring parameters
+        this.loadingRings = 2;        // Reduced from 3
+        this.ringPriorities = [10, 5];   // Simplified priorities
 
         this.setupEventListeners();
         this.createInitialTerrain();
@@ -91,35 +100,18 @@ class FlightSimulator {
     }
 
     createTreeInstancedMesh() {
-        // Create a simple cone + cylinder for the tree
-        const treeGeometry = new THREE.Group();
-
-        // Tree trunk
-        const trunkGeometry = new THREE.CylinderGeometry(0.5, 0.8, 4, 6);
+        // Simplified tree geometry with fewer vertices
+        const trunkGeometry = new THREE.CylinderGeometry(0.5, 0.8, 4, 4); // Reduced segments
+        const topGeometry = new THREE.ConeGeometry(2, 6, 6);              // Reduced segments
         const trunkMaterial = new THREE.MeshPhongMaterial({ color: 0x4d2926 });
-        const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
-        trunk.position.y = 2;
-
-        // Tree top
-        const topGeometry = new THREE.ConeGeometry(2, 6, 8);
         const topMaterial = new THREE.MeshPhongMaterial({ color: 0x1d4d1d });
-        const top = new THREE.Mesh(topGeometry, topMaterial);
-        top.position.y = 7;
-
-        // Combine geometries
-        const combinedGeometry = new THREE.BufferGeometry();
-        const matrices = [];
-
-        trunk.updateMatrix();
-        matrices.push(trunk.matrix);
-        top.updateMatrix();
-        matrices.push(top.matrix);
 
         return { trunk: trunkGeometry, top: topGeometry, materials: [trunkMaterial, topMaterial] };
     }
 
     createTerrainChunk(x, z) {
-        const geometry = new THREE.PlaneGeometry(this.chunkSize, this.chunkSize, 50, 50);  // Increased resolution
+        // Reduce geometry complexity
+        const geometry = new THREE.PlaneGeometry(this.chunkSize, this.chunkSize, 32, 32);
         geometry.rotateX(-Math.PI / 2);
 
         // Add smooth elevation using Perlin noise
@@ -142,12 +134,56 @@ class FlightSimulator {
         const material = new THREE.MeshPhongMaterial({
             color: 0x3c8f3c,
             wireframe: false,
-            flatShading: false
+            flatShading: true
         });
 
         const chunk = new THREE.Mesh(geometry, material);
         chunk.position.set(x * this.chunkSize, 0, z * this.chunkSize);
         this.scene.add(chunk);
+
+        // Add trees to all visible chunks
+        const chunkArea = this.chunkSize * this.chunkSize;
+        const numberOfTrees = Math.floor(chunkArea * this.treeDensity);
+
+        for (let i = 0; i < numberOfTrees; i++) {
+            // Random position within chunk
+            const treeX = (Math.random() - 0.5) * this.chunkSize + x * this.chunkSize;
+            const treeZ = (Math.random() - 0.5) * this.chunkSize + z * this.chunkSize;
+
+            // Get elevation at tree position
+            const treeY = this.getElevation(treeX, treeZ);
+
+            // Simplified slope check
+            const slopeCheck1 = this.getElevation(treeX + 1, treeZ);
+
+            if (Math.abs(slopeCheck1 - treeY) < 3) {
+                const trunk = new THREE.Mesh(
+                    this.treeInstancedMesh.trunk,
+                    this.treeInstancedMesh.materials[0]
+                );
+                const top = new THREE.Mesh(
+                    this.treeInstancedMesh.top,
+                    this.treeInstancedMesh.materials[1]
+                );
+
+                trunk.position.set(treeX, treeY, treeZ);
+                top.position.set(treeX, treeY + 4, treeZ);
+
+                const rotation = Math.random() * Math.PI * 2;
+                trunk.rotation.y = rotation;
+                top.rotation.y = rotation;
+
+                const scale = 0.9 + Math.random() * 0.2;
+                trunk.scale.set(scale, scale, scale);
+                top.scale.set(scale, scale, scale);
+
+                this.scene.add(trunk);
+                this.scene.add(top);
+
+                if (!chunk.trees) chunk.trees = [];
+                chunk.trees.push({ trunk, top });
+            }
+        }
 
         // Check if this chunk should contain a lake
         const chunkCenterX = x * this.chunkSize;
@@ -197,55 +233,6 @@ class FlightSimulator {
             chunk.geometry.computeVertexNormals();
         }
 
-        // Add trees to the chunk
-        const chunkArea = this.chunkSize * this.chunkSize;
-        const numberOfTrees = Math.floor(chunkArea * this.treeDensity);
-
-        for (let i = 0; i < numberOfTrees; i++) {
-            // Random position within chunk
-            const treeX = (Math.random() - 0.5) * this.chunkSize + x * this.chunkSize;
-            const treeZ = (Math.random() - 0.5) * this.chunkSize + z * this.chunkSize;
-
-            // Get elevation at tree position
-            const treeY = this.getElevation(treeX, treeZ);
-
-            // Only place trees on relatively flat surfaces
-            const slopeCheck1 = this.getElevation(treeX + 1, treeZ);
-            const slopeCheck2 = this.getElevation(treeX, treeZ + 1);
-
-            if (Math.abs(slopeCheck1 - treeY) < 2 && Math.abs(slopeCheck2 - treeY) < 2) {
-                // Create tree
-                const trunk = new THREE.Mesh(
-                    this.treeInstancedMesh.trunk,
-                    this.treeInstancedMesh.materials[0]
-                );
-                const top = new THREE.Mesh(
-                    this.treeInstancedMesh.top,
-                    this.treeInstancedMesh.materials[1]
-                );
-
-                trunk.position.set(treeX, treeY, treeZ);
-                top.position.set(treeX, treeY + 4, treeZ);
-
-                // Add random rotation around Y axis
-                const rotation = Math.random() * Math.PI * 2;
-                trunk.rotation.y = rotation;
-                top.rotation.y = rotation;
-
-                // Add random scale variation
-                const scale = 0.8 + Math.random() * 0.4;
-                trunk.scale.set(scale, scale, scale);
-                top.scale.set(scale, scale, scale);
-
-                this.scene.add(trunk);
-                this.scene.add(top);
-
-                // Store references to remove later
-                if (!chunk.trees) chunk.trees = [];
-                chunk.trees.push(trunk, top);
-            }
-        }
-
         return chunk;
     }
 
@@ -285,25 +272,50 @@ class FlightSimulator {
         const currentChunkX = Math.floor(this.camera.position.x / this.chunkSize);
         const currentChunkZ = Math.floor(this.camera.position.z / this.chunkSize);
 
-        // Check and create new chunks if needed
+        // Simplified direction calculation
+        const direction = new THREE.Vector3(0, 0, -1);
+        direction.applyQuaternion(this.camera.quaternion);
+        const predictedX = currentChunkX + Math.round(direction.x * this.lookAheadDistance);
+        const predictedZ = currentChunkZ + Math.round(direction.z * this.lookAheadDistance);
+
+        // Queue new chunks with simplified priority calculation
         for (let x = currentChunkX - this.chunksVisible; x <= currentChunkX + this.chunksVisible; x++) {
             for (let z = currentChunkZ - this.chunksVisible; z <= currentChunkZ + this.chunksVisible; z++) {
                 const key = `${x},${z}`;
-                if (!this.terrainChunks.has(key)) {
-                    const chunk = this.createTerrainChunk(x, z);
-                    this.terrainChunks.set(key, chunk);
+                if (!this.terrainChunks.has(key) && !this.chunkLoadQueue.some(item => item.key === key)) {
+                    const distanceFromCurrent = Math.max(
+                        Math.abs(x - currentChunkX),
+                        Math.abs(z - currentChunkZ)
+                    );
+
+                    // Simplified priority calculation
+                    const inDirectionCone = Math.abs(x - predictedX) <= 2 &&
+                                          Math.abs(z - predictedZ) <= 2;
+                    const priority = inDirectionCone ? 10 - distanceFromCurrent : -distanceFromCurrent;
+
+                    this.chunkLoadQueue.push({ key, x, z, priority });
                 }
             }
         }
 
-        // Remove far chunks
+        // Process fixed number of chunks per frame
+        this.chunkLoadQueue.sort((a, b) => b.priority - a.priority);
+        for (let i = 0; i < this.chunksPerFrame && this.chunkLoadQueue.length > 0; i++) {
+            const { x, z } = this.chunkLoadQueue.shift();
+            const chunk = this.createTerrainChunk(x, z);
+            this.terrainChunks.set(`${x},${z}`, chunk);
+        }
+
+        // Remove far chunks with fade out
         for (const [key, chunk] of this.terrainChunks) {
             const [x, z] = key.split(',').map(Number);
             if (Math.abs(x - currentChunkX) > this.chunksVisible ||
                 Math.abs(z - currentChunkZ) > this.chunksVisible) {
+                // Only remove if not currently animating in
                 this.scene.remove(chunk);
                 if (chunk.trees) {
-                    chunk.trees.forEach(tree => this.scene.remove(tree));
+                    chunk.trees.forEach(tree => this.scene.remove(tree.trunk));
+                    chunk.trees.forEach(tree => this.scene.remove(tree.top));
                 }
                 if (chunk.water) {
                     this.scene.remove(chunk.water);
@@ -350,6 +362,7 @@ class FlightSimulator {
 
     animate() {
         requestAnimationFrame(() => this.animate());
+
         this.updateFlight();
         this.updateTerrain();
         this.renderer.render(this.scene, this.camera);
