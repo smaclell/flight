@@ -33,8 +33,9 @@ class FlightSimulator {
 
         // Terrain management
         this.terrainChunks = new Map();
-        this.chunkSize = 200;
-        this.chunksVisible = 7;
+        this.chunkSize = 300;       // Increased from 200
+        this.chunksVisible = 5;     // Reduced since chunks are larger
+        this.loadThreshold = 0.7;   // Trigger new chunk loading when 70% through current chunk
 
         // Add terrain generation parameters
         this.noiseScale = 0.003;  // Slightly decreased for wider features
@@ -48,7 +49,7 @@ class FlightSimulator {
         this.minClearance = 25; // Minimum distance to maintain above terrain
 
         // Add tree parameters
-        this.treeDensity = 0.002;
+        this.treeDensity = 0.0007;  // Adjusted for larger chunk size
         this.treeInstancedMesh = this.createTreeInstancedMesh();
 
         // Add chunk loading queue
@@ -69,6 +70,10 @@ class FlightSimulator {
         // Add loading ring parameters
         this.loadingRings = 2;        // Reduced from 3
         this.ringPriorities = [10, 5];   // Simplified priorities
+
+        // Add removal queue
+        this.chunkRemovalQueue = [];
+        this.removalsPerFrame = 2;  // Process fewer removals than additions
 
         this.setupEventListeners();
         this.createInitialTerrain();
@@ -110,8 +115,8 @@ class FlightSimulator {
     }
 
     createTerrainChunk(x, z) {
-        // Reduce geometry complexity
-        const geometry = new THREE.PlaneGeometry(this.chunkSize, this.chunkSize, 32, 32);
+        // Adjust geometry resolution for larger chunks
+        const geometry = new THREE.PlaneGeometry(this.chunkSize, this.chunkSize, 40, 40); // Increased from 32,32
         geometry.rotateX(-Math.PI / 2);
 
         // Add smooth elevation using Perlin noise
@@ -269,16 +274,23 @@ class FlightSimulator {
     }
 
     updateTerrain() {
-        const currentChunkX = Math.floor(this.camera.position.x / this.chunkSize);
-        const currentChunkZ = Math.floor(this.camera.position.z / this.chunkSize);
+        // Calculate current position in terms of chunks, including fractional part
+        const exactChunkX = this.camera.position.x / this.chunkSize;
+        const exactChunkZ = this.camera.position.z / this.chunkSize;
+        const currentChunkX = Math.floor(exactChunkX);
+        const currentChunkZ = Math.floor(exactChunkZ);
 
-        // Simplified direction calculation
+        // Calculate progress through current chunk
+        const progressX = exactChunkX - currentChunkX;
+        const progressZ = exactChunkZ - currentChunkZ;
+
+        // Get flight direction for predictive loading
         const direction = new THREE.Vector3(0, 0, -1);
         direction.applyQuaternion(this.camera.quaternion);
         const predictedX = currentChunkX + Math.round(direction.x * this.lookAheadDistance);
         const predictedZ = currentChunkZ + Math.round(direction.z * this.lookAheadDistance);
 
-        // Queue new chunks with simplified priority calculation
+        // Queue new chunks if needed, considering progress through current chunk
         for (let x = currentChunkX - this.chunksVisible; x <= currentChunkX + this.chunksVisible; x++) {
             for (let z = currentChunkZ - this.chunksVisible; z <= currentChunkZ + this.chunksVisible; z++) {
                 const key = `${x},${z}`;
@@ -288,17 +300,41 @@ class FlightSimulator {
                         Math.abs(z - currentChunkZ)
                     );
 
-                    // Simplified priority calculation
+                    // Higher priority when progressing through current chunk
+                    let priority = 0;
+                    if (direction.x > 0 && progressX > this.loadThreshold) {
+                        priority += x > currentChunkX ? 5 : 0;
+                    } else if (direction.x < 0 && progressX < (1 - this.loadThreshold)) {
+                        priority += x < currentChunkX ? 5 : 0;
+                    }
+                    if (direction.z > 0 && progressZ > this.loadThreshold) {
+                        priority += z > currentChunkZ ? 5 : 0;
+                    } else if (direction.z < 0 && progressZ < (1 - this.loadThreshold)) {
+                        priority += z < currentChunkZ ? 5 : 0;
+                    }
+
+                    // Add base priority calculations
                     const inDirectionCone = Math.abs(x - predictedX) <= 2 &&
                                           Math.abs(z - predictedZ) <= 2;
-                    const priority = inDirectionCone ? 10 - distanceFromCurrent : -distanceFromCurrent;
+                    priority += inDirectionCone ? 10 - distanceFromCurrent : -distanceFromCurrent;
 
                     this.chunkLoadQueue.push({ key, x, z, priority });
                 }
             }
         }
 
-        // Process fixed number of chunks per frame
+        // Queue chunks for removal instead of immediate removal
+        for (const [key, chunk] of this.terrainChunks) {
+            const [x, z] = key.split(',').map(Number);
+            if (Math.abs(x - currentChunkX) > this.chunksVisible ||
+                Math.abs(z - currentChunkZ) > this.chunksVisible) {
+                if (!this.chunkRemovalQueue.some(item => item.key === key)) {
+                    this.chunkRemovalQueue.push({ key, chunk });
+                }
+            }
+        }
+
+        // Process new chunks first
         this.chunkLoadQueue.sort((a, b) => b.priority - a.priority);
         for (let i = 0; i < this.chunksPerFrame && this.chunkLoadQueue.length > 0; i++) {
             const { x, z } = this.chunkLoadQueue.shift();
@@ -306,22 +342,20 @@ class FlightSimulator {
             this.terrainChunks.set(`${x},${z}`, chunk);
         }
 
-        // Remove far chunks with fade out
-        for (const [key, chunk] of this.terrainChunks) {
-            const [x, z] = key.split(',').map(Number);
-            if (Math.abs(x - currentChunkX) > this.chunksVisible ||
-                Math.abs(z - currentChunkZ) > this.chunksVisible) {
-                // Only remove if not currently animating in
-                this.scene.remove(chunk);
-                if (chunk.trees) {
-                    chunk.trees.forEach(tree => this.scene.remove(tree.trunk));
-                    chunk.trees.forEach(tree => this.scene.remove(tree.top));
-                }
-                if (chunk.water) {
-                    this.scene.remove(chunk.water);
-                }
-                this.terrainChunks.delete(key);
+        // Then process some removals
+        for (let i = 0; i < this.removalsPerFrame && this.chunkRemovalQueue.length > 0; i++) {
+            const { key, chunk } = this.chunkRemovalQueue.shift();
+            this.scene.remove(chunk);
+            if (chunk.trees) {
+                chunk.trees.forEach(tree => {
+                    this.scene.remove(tree.trunk);
+                    this.scene.remove(tree.top);
+                });
             }
+            if (chunk.water) {
+                this.scene.remove(chunk.water);
+            }
+            this.terrainChunks.delete(key);
         }
     }
 
